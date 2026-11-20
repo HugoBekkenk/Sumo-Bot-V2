@@ -15,6 +15,12 @@ const int maximumDriveOffsetUs = 500;
 
 const int triggerDeadzone = 10;
 const int triggerMaximum = 255;
+
+// PS4 left stick X values are normally about -127 full left to +127 full right.
+const int stickDeadzone = 15;
+const int stickMaximum = 127;
+const bool invertSteering = false;
+
 const int updateDelayMs = 20;
 const int debugOutputIntervalMs = 250;
 
@@ -38,10 +44,42 @@ void printBluetoothAddress() {
   );
 }
 
-void drive(int speed) {
+int reducedSpeedBySteering(int speed, float scale) {
+  return (int)round((float)speed * scale);
+}
+
+void drive(int speed, int steeringX = 0) {
   speed = constrain(speed, -maximumDriveOffsetUs, maximumDriveOffsetUs);
-  leftServo.writeMicroseconds(leftStopUs + speed);
-  rightServo.writeMicroseconds(rightStopUs - speed);
+
+  if (invertSteering) {
+    steeringX = -steeringX;
+  }
+  steeringX = constrain(steeringX, -stickMaximum, stickMaximum);
+
+  float leftScale = 1.0f;
+  float rightScale = 1.0f;
+
+  if (steeringX <= -stickDeadzone) {
+    // Stick left: gradually reduce the left servo speed.
+    // Just outside deadzone = almost full speed, full left = stopped.
+    float turnAmount = (float)(-steeringX - stickDeadzone) /
+                       (stickMaximum - stickDeadzone);
+    turnAmount = constrain(turnAmount, 0.0f, 1.0f);
+    leftScale = 1.0f - turnAmount;
+  } else if (steeringX >= stickDeadzone) {
+    // Stick right: gradually reduce the right servo speed.
+    // Just outside deadzone = almost full speed, full right = stopped.
+    float turnAmount = (float)(steeringX - stickDeadzone) /
+                       (stickMaximum - stickDeadzone);
+    turnAmount = constrain(turnAmount, 0.0f, 1.0f);
+    rightScale = 1.0f - turnAmount;
+  }
+
+  int leftSpeed = reducedSpeedBySteering(speed, leftScale);
+  int rightSpeed = reducedSpeedBySteering(speed, rightScale);
+
+  leftServo.writeMicroseconds(leftStopUs + leftSpeed);
+  rightServo.writeMicroseconds(rightStopUs - rightSpeed);
 }
 
 void onConnect() {
@@ -80,7 +118,7 @@ void setup() {
     Serial.println("PS4 Bluetooth initialized.");
   }
 
-  Serial.println("R2: forward. L2: reverse. Release both to stop.");
+  Serial.println("R2: forward. L2: reverse. Left stick X: steering. Release both triggers to stop.");
 }
 
 void loop() {
@@ -92,6 +130,8 @@ void loop() {
 
   int r2Value = PS4.R2Value();
   int l2Value = PS4.L2Value();
+  int steeringX = PS4.LStickX();
+
   int forwardSpeed = triggerToSpeed(r2Value);
   int reverseSpeed = triggerToSpeed(l2Value);
   int driveSpeed = constrain(
@@ -99,18 +139,42 @@ void loop() {
     -maximumDriveOffsetUs,
     maximumDriveOffsetUs
   );
-  drive(driveSpeed);
+
+  drive(driveSpeed, steeringX);
+
+  int debugSteeringX = invertSteering ? -steeringX : steeringX;
+  debugSteeringX = constrain(debugSteeringX, -stickMaximum, stickMaximum);
+
+  float leftScale = 1.0f;
+  float rightScale = 1.0f;
+  if (debugSteeringX <= -stickDeadzone) {
+    float turnAmount = (float)(-debugSteeringX - stickDeadzone) /
+                       (stickMaximum - stickDeadzone);
+    turnAmount = constrain(turnAmount, 0.0f, 1.0f);
+    leftScale = 1.0f - turnAmount;
+  } else if (debugSteeringX >= stickDeadzone) {
+    float turnAmount = (float)(debugSteeringX - stickDeadzone) /
+                       (stickMaximum - stickDeadzone);
+    turnAmount = constrain(turnAmount, 0.0f, 1.0f);
+    rightScale = 1.0f - turnAmount;
+  }
+
+  int leftSpeed = reducedSpeedBySteering(driveSpeed, leftScale);
+  int rightSpeed = reducedSpeedBySteering(driveSpeed, rightScale);
 
   if (millis() - lastDebugOutputMs >= debugOutputIntervalMs) {
     Serial.printf(
-      "R2 %s:%3d | L2 %s:%3d | drive:%4d | pulse L:%4d R:%4d us\n",
+      "R2 %s:%3d | L2 %s:%3d | drive:%4d | steerX:%4d | speed L:%4d R:%4d | pulse L:%4d R:%4d us\n",
       r2Value > triggerDeadzone ? "pressed " : "released",
       r2Value,
       l2Value > triggerDeadzone ? "pressed " : "released",
       l2Value,
       driveSpeed,
-      leftStopUs + driveSpeed,
-      rightStopUs - driveSpeed
+      steeringX,
+      leftSpeed,
+      rightSpeed,
+      leftStopUs + leftSpeed,
+      rightStopUs - rightSpeed
     );
     lastDebugOutputMs = millis();
   }
