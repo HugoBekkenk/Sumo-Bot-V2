@@ -7,9 +7,13 @@
 
 const int leftServoPin = 25;
 const int rightServoPin = 26;
+const int leftPositionServoPin = 27;
+const int rightPositionServoPin = 14;
+const int positionServoMinimum = 0;
+const int positionServoMaximum = 180;
 
 // Calibrate these so each servo is stationary at its corresponding value.
-const int leftStopUs = 1530;
+const int leftStopUs = 1542; //1533; //1530;
 const int rightStopUs = 1504; //1503 / 1503.9
 const int maximumDriveOffsetUs = 500;
 
@@ -26,6 +30,8 @@ const int debugOutputIntervalMs = 250;
 
 Servo leftServo;
 Servo rightServo;
+Servo leftPositionServo;
+Servo rightPositionServo;
 unsigned long lastDebugOutputMs = 0;
 
 void printBluetoothAddress() {
@@ -82,12 +88,24 @@ void drive(int speed, int steeringX = 0) {
   rightServo.writeMicroseconds(rightStopUs - rightSpeed);
 }
 
+void positionServos(int stickX) {
+  stickX = constrain(stickX, -stickMaximum, stickMaximum);
+
+  int leftAngle = map(stickX, -stickMaximum, stickMaximum,
+                      positionServoMinimum, positionServoMaximum);
+  int rightAngle = positionServoMinimum + positionServoMaximum - leftAngle;
+
+  leftPositionServo.write(leftAngle);
+  rightPositionServo.write(rightAngle);
+}
+
 void onConnect() {
   Serial.println("PS4 controller connected.");
 }
 
 void onDisconnect() {
   drive(0);
+  positionServos(0);
   Serial.println("PS4 controller disconnected. Servos stopped.");
 }
 
@@ -106,9 +124,14 @@ void setup() {
 
   leftServo.setPeriodHertz(50);
   rightServo.setPeriodHertz(50);
+  leftPositionServo.setPeriodHertz(50);
+  rightPositionServo.setPeriodHertz(50);
   leftServo.attach(leftServoPin, 500, 2500);
   rightServo.attach(rightServoPin, 500, 2500);
+  leftPositionServo.attach(leftPositionServoPin, 500, 2500);
+  rightPositionServo.attach(rightPositionServoPin, 500, 2500);
   drive(0);
+  positionServos(0);
 
   PS4.attachOnConnect(onConnect);
   PS4.attachOnDisconnect(onDisconnect);
@@ -118,7 +141,7 @@ void setup() {
     Serial.println("PS4 Bluetooth initialized.");
   }
 
-  Serial.println("R2: forward. L2: reverse. Left stick X: steering. Release both triggers to stop.");
+  Serial.println("R2: forward. L2: reverse. Left stick X: steering. Right stick X: position servos.");
 }
 
 void loop() {
@@ -131,6 +154,7 @@ void loop() {
   int r2Value = PS4.R2Value();
   int l2Value = PS4.L2Value();
   int steeringX = PS4.LStickX();
+  int positionStickX = PS4.RStickX();
 
   int forwardSpeed = triggerToSpeed(r2Value);
   int reverseSpeed = triggerToSpeed(l2Value);
@@ -141,6 +165,7 @@ void loop() {
   );
 
   drive(driveSpeed, steeringX);
+  positionServos(positionStickX);
 
   int debugSteeringX = invertSteering ? -steeringX : steeringX;
   debugSteeringX = constrain(debugSteeringX, -stickMaximum, stickMaximum);
