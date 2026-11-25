@@ -1,9 +1,16 @@
 #include <Arduino.h>
-#include <esp32-hal-alloc-bt-classic-mem.h>
 #include <ESP32Servo.h>
+
+#ifndef PHONE_CONTROL
+#include <esp32-hal-alloc-bt-classic-mem.h>
 #include <PS4Controller.h>
 #include <esp_err.h>
 #include <esp_mac.h>
+#else
+#define CUSTOM_SETTINGS
+#define INCLUDE_GAMEPAD_MODULE
+#include <DabbleESP32.h>
+#endif
 
 const int leftServoPin = 25;
 const int rightServoPin = 26;
@@ -34,6 +41,16 @@ Servo leftPositionServo;
 Servo rightPositionServo;
 unsigned long lastDebugOutputMs = 0;
 
+#ifdef PHONE_CONTROL
+int phonePositionAngle = 90;
+bool phoneInputReceived = false;
+#endif
+
+// 20:9B:A9:8B:DE:D2 
+
+// 9:8B:DE:D2
+
+#ifndef PHONE_CONTROL
 void printBluetoothAddress() {
   uint8_t address[6];
   esp_err_t result = esp_read_mac(address, ESP_MAC_BT);
@@ -49,6 +66,7 @@ void printBluetoothAddress() {
     address[3], address[4], address[5]
   );
 }
+#endif
 
 int reducedSpeedBySteering(int speed, float scale) {
   return (int)round((float)speed * scale);
@@ -93,12 +111,29 @@ void positionServos(int stickX) {
 
   int leftAngle = map(stickX, -stickMaximum, stickMaximum,
                       positionServoMinimum, positionServoMaximum);
+  leftPositionServo.write(leftAngle);
+  rightPositionServo.write(positionServoMinimum + positionServoMaximum -
+                           leftAngle);
+}
+
+#ifdef PHONE_CONTROL
+const float phoneSteeringAxisMaximum = 6.0f;
+
+void positionServosAtAngle(int leftAngle) {
+  leftAngle = constrain(leftAngle, positionServoMinimum,
+                        positionServoMaximum);
   int rightAngle = positionServoMinimum + positionServoMaximum - leftAngle;
 
   leftPositionServo.write(leftAngle);
   rightPositionServo.write(rightAngle);
 }
 
+int phoneAxisToSteering(float axis) {
+  axis = constrain(axis, -phoneSteeringAxisMaximum,
+                   phoneSteeringAxisMaximum);
+  return (int)round(axis * stickMaximum / phoneSteeringAxisMaximum);
+}
+#else
 void onConnect() {
   Serial.println("PS4 controller connected.");
 }
@@ -108,6 +143,7 @@ void onDisconnect() {
   positionServos(0);
   Serial.println("PS4 controller disconnected. Servos stopped.");
 }
+#endif
 
 int triggerToSpeed(int triggerValue) {
   if (triggerValue <= triggerDeadzone) {
@@ -120,7 +156,9 @@ int triggerToSpeed(int triggerValue) {
 
 void setup() {
   Serial.begin(115200);
+#ifndef PHONE_CONTROL
   printBluetoothAddress();
+#endif
 
   leftServo.setPeriodHertz(50);
   rightServo.setPeriodHertz(50);
@@ -133,6 +171,12 @@ void setup() {
   drive(0);
   positionServos(0);
 
+#ifdef PHONE_CONTROL
+  Dabble.begin("SumoBot");
+  Serial.println("Dabble BLE initialized. GamePad X: steering.");
+  Serial.println("Hold Square: forward. Hold Circle: reverse. Release to stop.");
+  Serial.println("Triangle/Cross: move position servos left/right.");
+#else
   PS4.attachOnConnect(onConnect);
   PS4.attachOnDisconnect(onDisconnect);
   if (!PS4.begin()) {
@@ -142,9 +186,78 @@ void setup() {
   }
 
   Serial.println("R2: forward. L2: reverse. Left stick X: steering. Right stick X: position servos.");
+#endif
 }
 
 void loop() {
+#ifdef PHONE_CONTROL
+  Dabble.processInput();
+  if (!Dabble.isAppConnected()) {
+    drive(0);
+    positionServos(0);
+    phonePositionAngle = 90;
+
+    if (millis() - lastDebugOutputMs >= 1000) {
+      Serial.println(
+        "No Dabble input received. Open GamePad and move the joystick."
+      );
+      lastDebugOutputMs = millis();
+    }
+
+    delay(100);
+    return;
+  }
+
+  if (!phoneInputReceived) {
+    Serial.println("Dabble input received.");
+    phoneInputReceived = true;
+  }
+
+  float steeringAxis = GamePad.getXaxisData();
+  int steeringX = phoneAxisToSteering(steeringAxis);
+
+  bool dpadUp = GamePad.isUpPressed();
+  bool dpadDown = GamePad.isDownPressed();
+  bool dpadLeft = GamePad.isLeftPressed();
+  bool dpadRight = GamePad.isRightPressed();
+  bool squarePressed = GamePad.isSquarePressed();
+  bool circlePressed = GamePad.isCirclePressed();
+  bool crossPressed = GamePad.isCrossPressed();
+  bool trianglePressed = GamePad.isTrianglePressed();
+  bool startPressed = GamePad.isStartPressed();
+  bool selectPressed = GamePad.isSelectPressed();
+
+  int driveSpeed = 0;
+  if (squarePressed != circlePressed) {
+    driveSpeed = squarePressed ? maximumDriveOffsetUs
+                               : -maximumDriveOffsetUs;
+  }
+  drive(driveSpeed, steeringX);
+
+  if (trianglePressed) {
+    phonePositionAngle--;
+  }
+  if (crossPressed) {
+    phonePositionAngle++;
+  }
+  positionServosAtAngle(phonePositionAngle);
+
+  if (millis() - lastDebugOutputMs >= debugOutputIntervalMs) {
+    Serial.printf(
+      "GamePad steerX:%+.2f | D-pad U%d D%d L%d R%d | "
+      "buttons Sq%d Ci%d Cross%d Tri%d St%d Se%d | "
+      "drive:%4d steer:%4d pos:%3d\n",
+      steeringAxis,
+      dpadUp, dpadDown, dpadLeft, dpadRight,
+      squarePressed, circlePressed, crossPressed, trianglePressed,
+      startPressed, selectPressed,
+      driveSpeed, steeringX, phonePositionAngle
+    );
+    lastDebugOutputMs = millis();
+  }
+
+  delay(updateDelayMs);
+#else
   if (!PS4.isConnected()) {
     drive(0);
     delay(100);
@@ -205,4 +318,5 @@ void loop() {
   }
 
   delay(updateDelayMs);
+#endif
 }
